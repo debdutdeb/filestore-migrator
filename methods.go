@@ -346,7 +346,7 @@ func (m *Migrate) DownloadAll() error {
 	var wg sync.WaitGroup
 
 	for i, file := range files {
-		if i == maxRun {
+		if i >= maxRun {
 			<-doneChan
 		}
 
