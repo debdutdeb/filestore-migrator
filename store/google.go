@@ -18,6 +18,8 @@ type GoogleStorageProvider struct {
 	JSONKey          string
 	Bucket           string
 	TempFileLocation string
+
+	service *storage.Service
 }
 
 // StoreType returns the name of the store
@@ -34,14 +36,23 @@ func (g *GoogleStorageProvider) SetTempDirectory(dir string) {
 func (g *GoogleStorageProvider) Download(fileCollection string, file rocketchat.File) (string, error) {
 	ctx := context.Background()
 
-	cfg, err := google.JWTConfigFromJSON([]byte(g.JSONKey), "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		return "", err
+	var service *storage.Service = g.service
+
+	if service == nil {
+		cfg, err := google.JWTConfigFromJSON([]byte(g.JSONKey), "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return "", err
+		}
+
+		c := cfg.Client(ctx)
+
+		service, err = storage.New(c)
+		if err != nil {
+			return "", err
+		}
+
+		g.service = service
 	}
-
-	c := cfg.Client(ctx)
-
-	service, err := storage.New(c)
 
 	filePath := g.TempFileLocation + "/" + file.ID
 
