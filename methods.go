@@ -324,6 +324,8 @@ func (m *Migrate) DownloadAll() error {
 
 	maxRun := 1
 	if v, ok := os.LookupEnv("MAX_CONCURRENCY"); ok {
+		fmt.Printf("MAX_CONCURRENCY: %s\n", v)
+		time.Sleep(time.Second * 10)
 		maxRun, err = strconv.Atoi(v)
 		if err != nil {
 			return err
@@ -348,14 +350,14 @@ func (m *Migrate) DownloadAll() error {
 			<-doneChan
 		}
 
+		index := i + 1 // for logs
+
 		file := file
 
-		go func(wg *sync.WaitGroup) {
+		go func(index int, wg *sync.WaitGroup) {
 			wg.Add(1)
 
 			defer wg.Done()
-
-			index := i + 1 // for logs
 
 			m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
 
@@ -378,7 +380,7 @@ func (m *Migrate) DownloadAll() error {
 
 			m.debugLog(fmt.Sprintf("[%v/%v] Downloaded %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
 			doneChan <- true
-		}(&wg)
+		}(index, &wg)
 
 		time.Sleep(m.fileDelay)
 	}
