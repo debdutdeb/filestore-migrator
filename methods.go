@@ -354,10 +354,13 @@ func (m *Migrate) DownloadAll() error {
 
 		file := file
 
+		wg.Add(1)
 		go func(index int, wg *sync.WaitGroup) {
-			wg.Add(1)
 
-			defer wg.Done()
+			defer func() {
+				fmt.Printf("done")
+				wg.Done()
+			}()
 
 			m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
 
