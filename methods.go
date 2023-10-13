@@ -332,7 +332,7 @@ func (m *Migrate) DownloadAll() error {
 		}
 	}
 
-	doneChan := make(chan bool)
+	guard := make(chan struct{}, maxRun)
 	errChan := make(chan error)
 
 	go func() {
@@ -346,9 +346,7 @@ func (m *Migrate) DownloadAll() error {
 	var wg sync.WaitGroup
 
 	for i, file := range files {
-		if i >= maxRun {
-			<-doneChan
-		}
+		guard <- struct{}{}
 
 		index := i + 1 // for logs
 
@@ -357,20 +355,21 @@ func (m *Migrate) DownloadAll() error {
 		wg.Add(1)
 		go func() {
 
-			defer wg.Done()
+			defer func() {
+				<-guard
+				wg.Done()
+			}()
 
 			m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
 
 			if !file.Complete {
 				fmt.Printf("[%v/%v] rocketchat.File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name)
-				doneChan <- true
 				return
 			}
 
 			if _, err := m.sourceStore.Download(m.fileCollectionName, file); err != nil {
 				if errors.Is(err, store.ErrNotFound) || m.skipErrors {
 					fmt.Printf("[%v/%v] No corresponding file for %s Skipping\n", index, len(files), file.Name)
-					doneChan <- true
 					return
 				} else {
 					errChan <- err
@@ -379,14 +378,13 @@ func (m *Migrate) DownloadAll() error {
 			}
 
 			m.debugLog(fmt.Sprintf("[%v/%v] Downloaded %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
-			doneChan <- true
 		}()
 
 		time.Sleep(m.fileDelay)
 	}
 
+	// waiting for the final one to complete
 	wg.Wait()
-
 	m.debugLog("Finished!")
 
 	return nil
