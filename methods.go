@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RocketChat/filestore-migrator/rocketchat"
@@ -140,65 +142,104 @@ func (m *Migrate) MigrateStore() error {
 
 	m.debugLog(fmt.Sprintf("Found %v files\n", len(files)))
 
+	var maxConcurrency int = 1
+	v, ok := os.LookupEnv("MAX_CONCURRENCY")
+	if ok {
+		maxConcurrency, err = strconv.Atoi(v)
+		if err != nil {
+			return err
+		}
+	}
+
+	errChan := make(chan error)
+	oneDone := make(chan bool)
+
+	go func(c chan error) {
+		e := <-c
+		if e == nil {
+			return
+		}
+		panic(e)
+	}(errChan)
+
 	for i, file := range files {
+		if i == maxConcurrency {
+			// wait before scheduling again
+			<-oneDone
+		}
+
 		index := i + 1 // for logs
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
+		file := file
 
-		if !file.Complete {
-			m.debugLog(fmt.Sprintf("[%v/%v] File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name))
-			continue
-		}
+		go func(doneChan chan bool, errChan chan error) {
+			m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
 
-		downloadedPath, err := m.sourceStore.Download(m.fileCollectionName, file)
-		if err != nil {
-			if err == store.ErrNotFound || m.skipErrors {
-				m.debugLog(fmt.Sprintf("[%v/%v] No corresponding file for %s Skipping\n", index, len(files), file.Name))
-				err = nil
-				continue
-			} else {
-				return err
+			if !file.Complete {
+				m.debugLog(fmt.Sprintf("[%v/%v] File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name))
+				doneChan <- true
+				return
 			}
-		}
 
-		if file.Rid == "" && m.storeName == "Uploads" {
-			file.Rid = "undefined"
-		}
+			downloadedPath, err := m.sourceStore.Download(m.fileCollectionName, file)
+			if err != nil {
+				if err == store.ErrNotFound || m.skipErrors {
+					m.debugLog(fmt.Sprintf("[%v/%v] No corresponding file for %s Skipping\n", index, len(files), file.Name))
+					doneChan <- true
+					return
+				} else {
+					errChan <- err
+					return
+				}
+			}
 
-		if file.UserID == "" {
-			file.UserID = "undefined"
-		}
+			if file.Rid == "" && m.storeName == "Uploads" {
+				file.Rid = "undefined"
+			}
 
-		objectPath := m.getObjectPath(&file)
+			if file.UserID == "" {
+				file.UserID = "undefined"
+			}
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Uploading to %s to: %s\n", index, len(files), m.destinationStore.StoreType(), objectPath))
+			objectPath := m.getObjectPath(&file)
 
-		if err := m.destinationStore.Upload(objectPath, downloadedPath, file.Type); err != nil {
-			return err
-		}
+			m.debugLog(fmt.Sprintf("[%v/%v] Uploading to %s to: %s\n", index, len(files), m.destinationStore.StoreType(), objectPath))
 
-		unset := m.fixFileForUpload(&file, objectPath)
+			if err := m.destinationStore.Upload(objectPath, downloadedPath, file.Type); err != nil {
+				errChan <- err
+				return
+			}
 
-		update := bson.M{
-			"$set": file,
-		}
+			unset := m.fixFileForUpload(&file, objectPath)
 
-		if unset != "" {
-			update["$unset"] = bson.M{unset: 1}
-		}
+			update := bson.M{
+				"$set": file,
+			}
 
-		db := m.session.Client().Database(m.databaseName)
-		collection := db.Collection(m.fileCollectionName)
+			if unset != "" {
+				update["$unset"] = bson.M{unset: 1}
+			}
 
-		if _, err := collection.UpdateOne(context.TODO(), bson.M{"_id": file.ID}, update); err != nil {
-			return err
-		}
+			db := m.session.Client().Database(m.databaseName)
+			collection := db.Collection(m.fileCollectionName)
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Completed Uploading %s\n", index, len(files), file.Name))
+			if _, err := collection.UpdateOne(context.TODO(), bson.M{"_id": file.ID}, update); err != nil {
+				errChan <- err
+				return
+			}
 
-		time.Sleep(m.fileDelay)
+			m.debugLog(fmt.Sprintf("[%v/%v] Completed Uploading %s\n", index, len(files), file.Name))
 
+			time.Sleep(m.fileDelay)
+
+			doneChan <- true
+
+		}(oneDone, errChan)
 	}
+
+	<-oneDone
+
+	errChan <- nil
 
 	m.debugLog("Finished!")
 
@@ -238,7 +279,7 @@ func (m *Migrate) fixFileForUpload(file *rocketchat.File, objectPath string) str
 
 	case "GoogleCloudStorage":
 		file.GoogleStorage = rocketchat.GoogleStorage{
-			Path: objectPath,
+			Path: objectPath, // Set to empty object so won't be saved back
 		}
 
 		// Set to empty object so won't be saved back
@@ -281,30 +322,68 @@ func (m *Migrate) DownloadAll() error {
 
 	m.debugLog(fmt.Sprintf("Found %v files\n", len(files)))
 
+	maxRun := 1
+	if v, ok := os.LookupEnv("MAX_CONCURRENCY"); ok {
+		maxRun, err = strconv.Atoi(v)
+		if err != nil {
+			return err
+		}
+	}
+
+	doneChan := make(chan bool)
+	errChan := make(chan error)
+
+	go func() {
+		e := <-errChan
+		if e == nil {
+			return
+		}
+		panic(e)
+	}()
+
+	var wg sync.WaitGroup
+
 	for i, file := range files {
-		index := i + 1 // for logs
-
-		m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
-
-		if !file.Complete {
-			fmt.Printf("[%v/%v] rocketchat.File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name)
-			continue
+		if i == maxRun {
+			<-doneChan
 		}
 
-		if _, err := m.sourceStore.Download(m.fileCollectionName, file); err != nil {
-			if err == store.ErrNotFound || m.skipErrors {
-				fmt.Printf("[%v/%v] No corresponding file for %s Skipping\n", index, len(files), file.Name)
-				err = nil
-				continue
-			} else {
-				return err
+		file := file
+
+		go func(wg *sync.WaitGroup) {
+			wg.Add(1)
+
+			defer wg.Done()
+
+			index := i + 1 // for logs
+
+			m.debugLog(fmt.Sprintf("[%v/%v] Downloading %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
+
+			if !file.Complete {
+				fmt.Printf("[%v/%v] rocketchat.File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name)
+				doneChan <- true
+				return
 			}
-		}
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Downloaded %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
+			if _, err := m.sourceStore.Download(m.fileCollectionName, file); err != nil {
+				if errors.Is(err, store.ErrNotFound) || m.skipErrors {
+					fmt.Printf("[%v/%v] No corresponding file for %s Skipping\n", index, len(files), file.Name)
+					doneChan <- true
+					return
+				} else {
+					errChan <- err
+					return
+				}
+			}
+
+			m.debugLog(fmt.Sprintf("[%v/%v] Downloaded %s from: %s\n", index, len(files), file.Name, m.sourceStore.StoreType()))
+			doneChan <- true
+		}(&wg)
 
 		time.Sleep(m.fileDelay)
 	}
+
+	wg.Wait()
 
 	m.debugLog("Finished!")
 
