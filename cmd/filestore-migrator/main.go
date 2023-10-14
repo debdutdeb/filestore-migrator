@@ -29,9 +29,9 @@ func main() {
 		*detectSource = false
 	}
 
-	if *action == "upload" && *sourceType == "" {
-		panic("When specifying upload action you need to provide at least the sourceType")
-	}
+	//if *action == "upload" && *sourceType == "" {
+	//	panic("When specifying upload action you need to provide at least the sourceType")
+	//}
 
 	config, err := Parse(*configFile,
 		*databaseURL,

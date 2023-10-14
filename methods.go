@@ -324,8 +324,6 @@ func (m *Migrate) DownloadAll() error {
 
 	maxRun := 1
 	if v, ok := os.LookupEnv("MAX_CONCURRENCY"); ok {
-		fmt.Printf("MAX_CONCURRENCY: %s\n", v)
-		time.Sleep(time.Second * 10)
 		maxRun, err = strconv.Atoi(v)
 		if err != nil {
 			return err
@@ -401,54 +399,90 @@ func (m *Migrate) UploadAll(filesRoot string) error {
 		return err
 	}
 
+	maxRuns := 1
+	if v, ok := os.LookupEnv("MAX_CONCURRENCY"); ok {
+		maxRuns, err = strconv.Atoi(v)
+		if err != nil {
+			return err
+		}
+	}
+
+	guard := make(chan struct{}, maxRuns)
+
+	errChan := make(chan error)
+
+	go func() {
+		e := <-errChan
+		if e == nil {
+			return
+		}
+		panic(e)
+	}()
+
+	var wg sync.WaitGroup
+
 	m.debugLog(fmt.Sprintf("Found %v files in database\n", len(files)))
 
 	filesRoot = filesRoot + "/" + strings.ToLower(m.storeName)
 
 	for i, file := range files {
+		guard <- struct{}{}
 		index := i + 1 // for logs
 
 		fileLocation := filesRoot + "/" + file.ID
 
-		if _, err := os.Stat(fileLocation); os.IsNotExist(err) {
-			log.Println("Failed to locate: ", file.Name)
-			continue
-		}
+		wg.Add(1)
+		go func() {
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Uploading %s to: %s\n", index, len(files), file.Name, m.destinationStore.StoreType()))
+			defer func() {
+				<-guard
+				wg.Done()
+			}()
 
-		if !file.Complete {
-			fmt.Printf("[%v/%v] rocketchat.File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name)
-			continue
-		}
+			if _, err := os.Stat(fileLocation); os.IsNotExist(err) {
+				log.Println("Failed to locate: ", file.Name)
+				return
+			}
 
-		objectPath := m.getObjectPath(&file)
+			m.debugLog(fmt.Sprintf("[%v/%v] Uploading %s to: %s\n", index, len(files), file.Name, m.destinationStore.StoreType()))
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Uploading to %s to: %s\n", index, len(files), m.destinationStore.StoreType(), objectPath))
-		if err := m.destinationStore.Upload(objectPath, fileLocation, file.Type); err != nil {
-			return err
-		}
+			if !file.Complete {
+				fmt.Printf("[%v/%v] rocketchat.File wasn't completed uploading for %s Skipping\n", index, len(files), file.Name)
+				return
+			}
 
-		unset := m.fixFileForUpload(&file, objectPath)
+			objectPath := m.getObjectPath(&file)
 
-		update := bson.M{
-			"$set": file,
-		}
+			m.debugLog(fmt.Sprintf("[%v/%v] Uploading to %s to: %s\n", index, len(files), m.destinationStore.StoreType(), objectPath))
+			if err := m.destinationStore.Upload(objectPath, fileLocation, file.Type); err != nil {
+				errChan <- err
+				return
+			}
 
-		if unset != "" {
-			update["$unset"] = bson.M{unset: 1}
-		}
+			unset := m.fixFileForUpload(&file, objectPath)
 
-		collection := m.session.Client().Database(m.databaseName).Collection(m.fileCollectionName)
+			update := bson.M{
+				"$set": file,
+			}
 
-		if _, err := collection.UpdateOne(context.TODO(), bson.M{"_id": file.ID}, update); err != nil {
-			return err
-		}
+			if unset != "" {
+				update["$unset"] = bson.M{unset: 1}
+			}
 
-		m.debugLog(fmt.Sprintf("[%v/%v] Completed Uploading %s\n", index, len(files), file.Name))
+			collection := m.session.Client().Database(m.databaseName).Collection(m.fileCollectionName)
+
+			if _, err := collection.UpdateOne(context.TODO(), bson.M{"_id": file.ID}, update); err != nil {
+				errChan <- err
+				return
+			}
+
+			m.debugLog(fmt.Sprintf("[%v/%v] Completed Uploading %s\n", index, len(files), file.Name))
+		}()
 
 		time.Sleep(m.fileDelay)
 	}
+
+	wg.Wait()
 
 	m.debugLog("Finished!")
 
