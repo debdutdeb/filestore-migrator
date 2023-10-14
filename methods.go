@@ -210,10 +210,10 @@ func (m *Migrate) MigrateStore() error {
 				return
 			}
 
-			unset := m.fixFileForUpload(&file, objectPath)
+			set, unset := m.fixFileForUpload(&file, objectPath)
 
 			update := bson.M{
-				"$set": file,
+				"$set": set,
 			}
 
 			if unset != "" {
@@ -264,38 +264,48 @@ func (m *Migrate) getObjectPath(file *rocketchat.File) string {
 	return objectPath
 }
 
-func (m *Migrate) fixFileForUpload(file *rocketchat.File, objectPath string) string {
+type fileUpdate struct {
+	GoogleStorage *rocketchat.GoogleStorage `bson:"GoogleStorage,omitempty"`
+	AmazonS3      *rocketchat.AmazonS3      `bson:"AmazonS3,omitempty"`
+	Store         string                    `bson:"store"`
+	Path          string                    `bson:"path"`
+	Url           string                    `bson:"url"`
+}
+
+func (m *Migrate) fixFileForUpload(file *rocketchat.File, objectPath string) (fileUpdate, string) {
 	unset := ""
+
+	set := fileUpdate{}
 
 	switch m.destinationStore.StoreType() {
 	case "AmazonS3":
-		file.AmazonS3 = &rocketchat.AmazonS3{
+		set.AmazonS3 = &rocketchat.AmazonS3{
 			Path: objectPath,
 		}
 
 		// Set to empty object so won't be saved back
 		unset = "GoogleStorage"
-		file.GoogleStorage = nil
+		set.GoogleStorage = nil
 
 	case "GoogleCloudStorage":
-		file.GoogleStorage = &rocketchat.GoogleStorage{
+		set.GoogleStorage = &rocketchat.GoogleStorage{
 			Path: objectPath, // Set to empty object so won't be saved back
 		}
 
 		// Set to empty object so won't be saved back
 		unset = "AmazonS3"
-		file.AmazonS3 = nil
+		set.AmazonS3 = nil
 	case "FileSystem":
 	default:
 	}
 
 	ufsPath := fmt.Sprintf("/ufs/%s:%s/%s/%s", m.destinationStore.StoreType(), m.storeName, file.ID, file.Name)
 
-	file.URL = ufsPath
-	file.Path = ufsPath
-	file.Store = m.destinationStore.StoreType() + ":" + m.storeName
+	set.Path = ufsPath
+	set.Url = strings.Replace(file.URL, file.Path, ufsPath, 1)
+	set.Store = m.destinationStore.StoreType() + ":" + m.storeName
 
-	return unset
+	return set, unset
 }
 
 // SetFileOffset sets an offset for file upload/downloads
@@ -459,10 +469,10 @@ func (m *Migrate) UploadAll(filesRoot string) error {
 				return
 			}
 
-			unset := m.fixFileForUpload(&file, objectPath)
+			set, unset := m.fixFileForUpload(&file, objectPath)
 
 			update := bson.M{
-				"$set": file,
+				"$set": set,
 			}
 
 			if unset != "" {
