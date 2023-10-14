@@ -16,10 +16,10 @@ type File struct {
 	Uploading     bool
 	Extension     string
 	Progress      int
-	AmazonS3      AmazonS3      `bson:"AmazonS3,omitempty"`
-	GoogleStorage GoogleStorage `bson:"GoogleStorage,omitempty"`
-	UpdatedAt     time.Time     `bson:"_updatedAt"`
-	InstanceID    string        `bson:"instanceId"`
+	AmazonS3      *AmazonS3      `bson:"AmazonS3,omitempty"`
+	GoogleStorage *GoogleStorage `bson:"GoogleStorage,omitempty"`
+	UpdatedAt     time.Time      `bson:"_updatedAt"`
+	InstanceID    string         `bson:"instanceId"`
 	Identify      struct {
 		Format string
 		Size   struct {

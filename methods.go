@@ -269,22 +269,22 @@ func (m *Migrate) fixFileForUpload(file *rocketchat.File, objectPath string) str
 
 	switch m.destinationStore.StoreType() {
 	case "AmazonS3":
-		file.AmazonS3 = rocketchat.AmazonS3{
+		file.AmazonS3 = &rocketchat.AmazonS3{
 			Path: objectPath,
 		}
 
 		// Set to empty object so won't be saved back
 		unset = "GoogleStorage"
-		file.GoogleStorage = rocketchat.GoogleStorage{}
+		file.GoogleStorage = nil
 
 	case "GoogleCloudStorage":
-		file.GoogleStorage = rocketchat.GoogleStorage{
+		file.GoogleStorage = &rocketchat.GoogleStorage{
 			Path: objectPath, // Set to empty object so won't be saved back
 		}
 
 		// Set to empty object so won't be saved back
 		unset = "AmazonS3"
-		file.AmazonS3 = rocketchat.AmazonS3{}
+		file.AmazonS3 = nil
 	case "FileSystem":
 	default:
 	}
